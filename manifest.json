@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "AutoClip Marketing Helper",
+  "version": "1.0.0",
+  "description": "마케팅 분석을 위한 확장프로그램",
+
+  "permissions": [
+    "tabs",
+    "scripting",
+    "cookies",
+    "downloads",
+    "contextMenus",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
+  ],
+
+  "host_permissions": [
+    "https://search.shopping.naver.com/*",
+    "https://smartstore.naver.com/*",
+    "https://brand.naver.com/*",
+    "https://marketing.autoclip.kr/*",
+    "https://advertising.coupang.com/*",
+    "https://xauth.coupang.com/*",
+    "https://*.coupang.com/*",
+    "http://localhost/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://marketing.autoclip.kr/*", "http://localhost/*", "http://127.0.0.1/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "incognito": "spanning"
+}
