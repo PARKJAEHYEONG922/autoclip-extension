@@ -22,28 +22,15 @@ export function handleCoupangAdsLoginCheck(message, sendResponse) {
     });
 }
 
-// Wing 로그인 상태 확인
-export async function handleWingLoginCheck(message, sendResponse) {
-    try {
-        // getAll로 wing.coupang.com에 해당하는 모든 쿠키 확인
-        const cookies = await chrome.cookies.getAll({ url: "https://wing.coupang.com/" });
-        const hasSession = cookies.some(c =>
-            c.name === "XSRF-TOKEN" || c.name === "JSESSIONID" || c.name === "wing-sso-token"
-        );
-        if (hasSession) {
-            sendResponse({ loggedIn: true });
-            return;
-        }
-        // 쿠키 없으면 실제 API 호출로 확인
-        const res = await fetch("https://wing.coupang.com/", {
-            credentials: "include",
-            redirect: "manual"
-        });
-        // 로그인 안 되어있으면 302 리다이렉트 (login 페이지로)
-        sendResponse({ loggedIn: res.status === 200 });
-    } catch {
-        sendResponse({ loggedIn: false });
-    }
+// Wing 로그인 상태 확인 (쿠키 존재 여부로 판단)
+export function handleWingLoginCheck(message, sendResponse) {
+    chrome.cookies.getAll({ url: "https://wing.coupang.com" }, (cookies) => {
+        const names = cookies.map(c => c.name);
+        console.log("[Wing Check] cookies:", names);
+        // XSRF-TOKEN 또는 세션 관련 쿠키가 있으면 로그인 상태
+        const loggedIn = names.includes("XSRF-TOKEN") || names.includes("JSESSIONID") || names.includes("SID") || names.includes("SESSION");
+        sendResponse({ loggedIn });
+    });
 }
 
 // Wing 상품 검색 (키워드 분석)

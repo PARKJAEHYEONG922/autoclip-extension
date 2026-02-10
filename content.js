@@ -13,7 +13,13 @@
         const message = event.data;
         if (!message || !message.type) return;
 
-        // AUTOCLIP_ 접두사가 있는 메시지만 처리
+        // PING 요청에 READY 재전송 (React 앱이 content script보다 늦게 로드될 때)
+        if (message.type === "AUTOCLIP_PING") {
+            window.postMessage({ type: "AUTOCLIP_EXTENSION_READY", version: chrome.runtime.getManifest().version }, window.location.origin);
+            return;
+        }
+
+        // AUTOCLIP_REQUEST_ 접두사가 있는 메시지만 처리
         if (!message.type.startsWith("AUTOCLIP_REQUEST_")) return;
 
         const requestId = message.requestId;
