@@ -22,15 +22,28 @@ export function handleCoupangAdsLoginCheck(message, sendResponse) {
     });
 }
 
-// Wing 로그인 상태 확인 (쿠키 존재 여부로 판단)
-export function handleWingLoginCheck(message, sendResponse) {
-    chrome.cookies.getAll({ url: "https://wing.coupang.com" }, (cookies) => {
-        const names = cookies.map(c => c.name);
-        console.log("[Wing Check] cookies:", names);
-        // XSRF-TOKEN 또는 세션 관련 쿠키가 있으면 로그인 상태
-        const loggedIn = names.includes("XSRF-TOKEN") || names.includes("JSESSIONID") || names.includes("SID") || names.includes("SESSION");
-        sendResponse({ loggedIn });
-    });
+// Wing 로그인 상태 확인 (XSRF-TOKEN 쿠키 존재 + 만료 여부)
+export async function handleWingLoginCheck(message, sendResponse) {
+    try {
+        const tokenCookie = await chrome.cookies.get({
+            url: "https://wing.coupang.com/",
+            name: "XSRF-TOKEN"
+        });
+        if (!tokenCookie) {
+            sendResponse({ loggedIn: false });
+            return;
+        }
+
+        // 쿠키 만료 확인
+        if (tokenCookie.expirationDate && tokenCookie.expirationDate < Date.now() / 1000) {
+            sendResponse({ loggedIn: false });
+            return;
+        }
+
+        sendResponse({ loggedIn: true });
+    } catch {
+        sendResponse({ loggedIn: false });
+    }
 }
 
 // Wing 상품 검색 (키워드 분석)
@@ -68,7 +81,12 @@ export async function handleCoupangWingProductSearch(message, sendResponse) {
         sendResponse({ success: true, data });
     } catch (e) {
         console.error("[Background] coupangWingProductSearch error:", e);
-        sendResponse({ success: false, error: String(e) });
+        const msg = String(e);
+        if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+            sendResponse({ success: false, error: "Wing 로그인이 만료되었습니다. wing.coupang.com에 다시 로그인해주세요." });
+        } else {
+            sendResponse({ success: false, error: msg });
+        }
     }
 }
 
