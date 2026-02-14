@@ -2,7 +2,16 @@
 
 import { startKeepAlive, stopKeepAlive, waitForTabLoad } from './bg-utils.js';
 
-export async function handleFetchCoupangAdsReport(message, sendResponse) {
+async function sendProgress(senderTabId, step) {
+    if (!senderTabId) return;
+    try {
+        await chrome.tabs.sendMessage(senderTabId, { type: 'AUTOCLIP_PROGRESS', step });
+    } catch (e) {
+        // content script가 없는 탭이면 무시
+    }
+}
+
+export async function handleFetchCoupangAdsReport(message, sendResponse, senderTabId) {
     // 서비스 워커 유지 시작
     startKeepAlive();
 
@@ -15,41 +24,15 @@ export async function handleFetchCoupangAdsReport(message, sendResponse) {
         const reportUrl = "https://advertising.coupang.com/marketing-reporting/billboard/reports/pa";
         const loginPageUrl = "https://advertising.coupang.com/user/login";
 
-        // 1. 시크릿 모드에서 쿠팡 쿠키 삭제 (깨끗한 세션 보장)
-        console.log("[Background] Clearing Coupang cookies from incognito...");
-
-        const coupangDomains = [
-            "coupang.com",
-            ".coupang.com",
-            "advertising.coupang.com",
-            "xauth.coupang.com"
-        ];
-
-        for (const domain of coupangDomains) {
-            try {
-                const cookies = await chrome.cookies.getAll({ domain: domain });
-                for (const cookie of cookies) {
-                    const url = `https://${cookie.domain.startsWith('.') ? cookie.domain.slice(1) : cookie.domain}${cookie.path}`;
-                    await chrome.cookies.remove({
-                        url: url,
-                        name: cookie.name,
-                        storeId: "1" // 시크릿 모드 쿠키 스토어
-                    });
-                }
-                console.log(`[Background] Cleared ${cookies.length} cookies for ${domain}`);
-            } catch (e) {
-                console.log(`[Background] Cookie clear for ${domain}:`, e.message);
-            }
-        }
-
-        // 2. 시크릿 모드 윈도우 생성
+        // 1. 시크릿 모드 윈도우 생성 (쿠키 삭제를 위해 먼저 생성)
+        await sendProgress(senderTabId, '시크릿 창 생성 중...');
         console.log("[Background] Creating incognito window...");
         console.log("[Background] Login URL:", loginPageUrl);
 
         let incognitoWindow;
         try {
             incognitoWindow = await chrome.windows.create({
-                url: loginPageUrl,
+                url: "about:blank",
                 incognito: true,
                 focused: false
             });
@@ -97,6 +80,39 @@ export async function handleFetchCoupangAdsReport(message, sendResponse) {
             throw new Error("시크릿 모드 탭을 찾을 수 없습니다. 확장프로그램을 다시 로드해주세요.");
         }
 
+        // 2. 시크릿 탭의 실제 cookieStoreId를 읽어서 쿠키 삭제 (깨끗한 세션 보장)
+        const incognitoTab = await chrome.tabs.get(tabId);
+        const incognitoStoreId = incognitoTab.cookieStoreId || "1";
+        console.log("[Background] Incognito cookieStoreId:", incognitoStoreId);
+        console.log("[Background] Clearing Coupang cookies from incognito...");
+
+        const coupangDomains = [
+            "coupang.com",
+            ".coupang.com",
+            "advertising.coupang.com",
+            "xauth.coupang.com"
+        ];
+
+        for (const domain of coupangDomains) {
+            try {
+                const cookies = await chrome.cookies.getAll({ domain: domain, storeId: incognitoStoreId });
+                for (const cookie of cookies) {
+                    const url = `https://${cookie.domain.startsWith('.') ? cookie.domain.slice(1) : cookie.domain}${cookie.path}`;
+                    await chrome.cookies.remove({
+                        url: url,
+                        name: cookie.name,
+                        storeId: incognitoStoreId
+                    });
+                }
+                console.log(`[Background] Cleared ${cookies.length} cookies for ${domain}`);
+            } catch (e) {
+                console.log(`[Background] Cookie clear for ${domain}:`, e.message);
+            }
+        }
+
+        // 3. 쿠키 삭제 후 로그인 페이지로 이동
+        await sendProgress(senderTabId, '로그인 페이지 접속 중...');
+        await chrome.tabs.update(tabId, { url: loginPageUrl });
         console.log("[Background] Using tabId:", tabId);
 
         await waitForTabLoad(tabId, 30000);
@@ -108,6 +124,7 @@ export async function handleFetchCoupangAdsReport(message, sendResponse) {
 
         // 로그인 페이지에서 시작 (시크릿 모드이므로 항상 로그인 필요)
         if (currentUrl.includes("/user/login") || currentUrl.includes("/login")) {
+            await sendProgress(senderTabId, '로그인 중...');
             console.log("[Background] Login page detected, clicking login button...");
 
             // "로그인하기" 버튼 클릭 (xauth로 이동)
@@ -231,6 +248,7 @@ export async function handleFetchCoupangAdsReport(message, sendResponse) {
                 }
 
                 // 로그인 완료 또는 2차 인증 대기 (최대 120초)
+                await sendProgress(senderTabId, '로그인 확인 대기 중...');
                 console.log("[Background] Waiting for login completion or 2FA...");
                 const loginTimeout = 120000; // 2분
                 const loginStartTime = Date.now();
@@ -276,6 +294,7 @@ export async function handleFetchCoupangAdsReport(message, sendResponse) {
                     // 2차 인증 감지
                     if (checkResult?.is2FA && !requires2FA) {
                         requires2FA = true;
+                        await sendProgress(senderTabId, '2차 인증 대기 중... (직접 입력해주세요)');
                         console.log("[Background] 2FA detected! Activating tab for user input...");
                         // 탭 활성화 (사용자가 직접 입력할 수 있도록)
                         await chrome.tabs.update(tabId, { active: true });
@@ -309,6 +328,7 @@ export async function handleFetchCoupangAdsReport(message, sendResponse) {
         } // end of if (login page)
 
         // 보고서 페이지로 이동 (로그인 후 또는 이미 로그인된 경우)
+        await sendProgress(senderTabId, '보고서 페이지 접속 중...');
         tab = await chrome.tabs.get(tabId);
         if (!tab.url?.includes("/reports/pa")) {
             console.log("[Background] Navigating to report page...");
@@ -318,6 +338,7 @@ export async function handleFetchCoupangAdsReport(message, sendResponse) {
         }
 
         // 3. 보고서 생성 페이지에서 옵션 설정 및 보고서 만들기
+        await sendProgress(senderTabId, '보고서 옵션 설정 중...');
         console.log("[Background] Setting report options...");
 
         const reportResult = await chrome.scripting.executeScript({
@@ -533,6 +554,7 @@ export async function handleFetchCoupangAdsReport(message, sendResponse) {
 
         // 4. 보고서 생성 완료 대기 및 다운로드
         // "요청한 보고서" 탭에서 정확한 보고서 찾아서 다운로드
+        await sendProgress(senderTabId, '보고서 생성 대기 중...');
         console.log("[Background] Waiting for report to be generated...");
 
         // 오늘 날짜 계산 (YYYY-MM-DD)
@@ -622,6 +644,7 @@ export async function handleFetchCoupangAdsReport(message, sendResponse) {
         let fileName = null;
 
         if (result.downloadUrl) {
+            await sendProgress(senderTabId, '보고서 다운로드 중...');
             console.log("[Background] Fetching file from URL:", result.downloadUrl);
 
             // 탭 내에서 fetch 실행 (쿠키 포함)

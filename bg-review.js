@@ -21,109 +21,60 @@ async function extractNaverProductData(tabId) {
             target: { tabId },
             world: 'MAIN',
             func: () => {
-                const state = window.__PRELOADED_STATE__;
-                if (!state) return { debugKeys: null, debugProductKeys: null };
-
-                const keys = Object.keys(state);
-                const product = (state.simpleProductForDetailPage && state.simpleProductForDetailPage.A) || {};
-                const productKeys = Object.keys(product);
+                const product = (window.__PRELOADED_STATE__?.simpleProductForDetailPage?.A) || {};
+                const allMerchantNos = new Set();
+                const merchantKeys = ['payReferenceKey', 'checkoutMerchantNo', 'merchantNo', 'naPaySellerNo'];
 
                 let originProductNo = product.originProductNo
                     || product.productNo
                     || product.channelProductNo
                     || null;
 
-                let checkoutMerchantNo = product.checkoutMerchantNo
-                    || product.merchantNo
-                    || product.naPaySellerNo
-                    || product.storeNo
-                    || product.channelNo
-                    || null;
-
-                // state 다른 최상위 키에서 탐색
-                if (!checkoutMerchantNo || !originProductNo) {
-                    const searchKeys = ['channel', 'channelInfo', 'storeInfo', 'sellerInfo', 'productDetail'];
-                    for (const sk of searchKeys) {
-                        let obj = state[sk];
-                        if (!obj) continue;
-                        if (obj.A && typeof obj.A === 'object') obj = obj.A;
-                        if (!checkoutMerchantNo) {
-                            checkoutMerchantNo = obj.checkoutMerchantNo
-                                || obj.merchantNo || obj.naPaySellerNo
-                                || obj.channelNo || null;
+                // 1) __PRELOADED_STATE__ 전체 JSON 검색
+                if (window.__PRELOADED_STATE__) {
+                    const s = JSON.stringify(window.__PRELOADED_STATE__);
+                    for (const k of merchantKeys) {
+                        for (const m of s.matchAll(new RegExp(`"${k}"\\s*:\\s*"?(\\d+)"?`, 'g'))) {
+                            allMerchantNos.add(Number(m[1]));
                         }
-                        if (!originProductNo) {
-                            originProductNo = obj.originProductNo
-                                || obj.productNo || null;
-                        }
-                        if (originProductNo && checkoutMerchantNo) break;
                     }
-                }
-
-                // state JSON 문자열 검색
-                if (!originProductNo || !checkoutMerchantNo) {
-                    const stateStr = JSON.stringify(state);
                     if (!originProductNo) {
-                        for (const k of ['originProductNo', 'productNo']) {
-                            const m = stateStr.match(new RegExp(`"${k}"\\s*:\\s*"?(\\d+)"?`));
-                            if (m) { originProductNo = Number(m[1]); break; }
-                        }
-                    }
-                    if (!checkoutMerchantNo) {
-                        for (const k of ['checkoutMerchantNo', 'merchantNo', 'naPaySellerNo', 'storeNo']) {
-                            const m = stateStr.match(new RegExp(`"${k}"\\s*:\\s*"?(\\d+)"?`));
-                            if (m) { checkoutMerchantNo = Number(m[1]); break; }
-                        }
+                        const m = s.match(/"originProductNo"\s*:\s*"?(\d+)"?/);
+                        if (m) originProductNo = Number(m[1]);
                     }
                 }
 
-                // __NEXT_DATA__ 검색
-                if (!checkoutMerchantNo) {
+                // 2) __NEXT_DATA__ 검색
+                if (window.__NEXT_DATA__) {
                     try {
-                        const nd = window.__NEXT_DATA__;
-                        if (nd) {
-                            const ndStr = JSON.stringify(nd);
-                            for (const k of ['storeNo', 'checkoutMerchantNo', 'merchantNo', 'channelNo', 'naPaySellerNo']) {
-                                const m = ndStr.match(new RegExp(`"${k}"\\s*:\\s*"?(\\d+)"?`));
-                                if (m && Number(m[1]) > 0) { checkoutMerchantNo = Number(m[1]); break; }
+                        const s = JSON.stringify(window.__NEXT_DATA__);
+                        for (const k of merchantKeys) {
+                            for (const m of s.matchAll(new RegExp(`"${k}"\\s*:\\s*"?(\\d+)"?`, 'g'))) {
+                                allMerchantNos.add(Number(m[1]));
                             }
                         }
                     } catch(e) {}
                 }
 
-                // 모든 인라인 script 태그 검색
-                if (!checkoutMerchantNo) {
-                    const scripts = document.querySelectorAll('script:not([src])');
-                    for (const sc of scripts) {
-                        const text = sc.textContent || '';
-                        if (!text || text.length < 10) continue;
-                        for (const k of ['storeNo', 'checkoutMerchantNo', 'merchantNo', 'channelNo']) {
-                            const m = text.match(new RegExp(`["']?${k}["']?\\s*[:=]\\s*["']?(\\d{5,})["']?`));
-                            if (m) { checkoutMerchantNo = Number(m[1]); break; }
-                        }
-                        if (checkoutMerchantNo) break;
+                // 3) 모든 인라인 script 태그 검색
+                for (const sc of document.querySelectorAll('script:not([src])')) {
+                    const text = sc.textContent || '';
+                    if (text.length < 20) continue;
+                    for (const k of merchantKeys) {
+                        const m = text.match(new RegExp(`["']?${k}["']?\\s*[:=]\\s*["']?(\\d{5,})["']?`));
+                        if (m) allMerchantNos.add(Number(m[1]));
                     }
                 }
 
-                // product 키 중 merchant/seller/channel/pay/store/no 포함하는 키-값 덤프
-                const suspectKeys = {};
-                for (const pk of productKeys) {
-                    const lk = pk.toLowerCase();
-                    if (lk.includes('merchant') || lk.includes('seller') || lk.includes('channel')
-                        || lk.includes('checkout') || lk.includes('pay') || lk.includes('store')
-                        || lk.includes('shop') || (lk.endsWith('no') && product[pk])) {
-                        suspectKeys[pk] = product[pk];
-                    }
-                }
+                const merchantNos = [...allMerchantNos].filter(n => n > 0);
+                console.log('[AutoClip] merchantNo 후보:', merchantNos, '(sources: state/next/scripts)');
 
                 return {
                     originProductNo,
-                    checkoutMerchantNo,
+                    checkoutMerchantNos: merchantNos,
+                    checkoutMerchantNo: merchantNos[0] || null,
                     productName: product.name || '',
                     salePrice: product.discountedSalePrice || product.salePrice || '',
-                    debugKeys: keys,
-                    debugProductKeys: productKeys,
-                    debugSuspectKeys: suspectKeys
                 };
             }
         });

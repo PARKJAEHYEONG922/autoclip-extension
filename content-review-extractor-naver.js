@@ -152,6 +152,23 @@
         if (bar) bar.style.width = percent + '%';
     }
 
+    function buildReviewApiHeaders() {
+        const headers = {
+            'Content-Type': 'application/json',
+            accept: 'application/json, text/plain, */*',
+        };
+
+        const metaVersion = document
+            .querySelector('meta[name=\"x-client-version\"], meta[name=\"X-Client-Version\"]')
+            ?.getAttribute('content');
+
+        if (metaVersion) {
+            headers['x-client-version'] = metaVersion;
+        }
+
+        return headers;
+    }
+
     // 메시지 수신 - 백그라운드에서 MAIN world 추출 데이터 포함
     chrome.runtime.onMessage.addListener((message) => {
         if (message.type === 'START_REVIEW_EXTRACT') {
@@ -174,7 +191,7 @@
 
         // 백그라운드에서 받은 MAIN world 데이터 사용
         let originProductNo = cachedProductData?.originProductNo || null;
-        let checkoutMerchantNo = cachedProductData?.checkoutMerchantNo || null;
+        let merchantNoCandidates = cachedProductData?.checkoutMerchantNos || [];
         let productName = cachedProductData?.productName || '';
         let salePrice = cachedProductData?.salePrice || '';
 
@@ -188,28 +205,23 @@
             productName = document.title.replace(/ : .*$/, '').trim() || '';
         }
 
-        // checkoutMerchantNo 폴백: 스토어 API 조회
-        if (!checkoutMerchantNo) {
+        // merchantNo 폴백: 스토어 API 조회
+        if (merchantNoCandidates.length === 0) {
             updateProgress('스토어 정보 조회 중...', 5);
-            checkoutMerchantNo = await fetchStoreNoFromAPI();
-            console.log('[AutoClip] API 폴백 결과 checkoutMerchantNo:', checkoutMerchantNo);
+            const fallback = await fetchStoreNoFromAPI();
+            if (fallback) merchantNoCandidates = [fallback];
         }
 
-        if (!originProductNo || !checkoutMerchantNo) {
-            console.error('[AutoClip] 상품 정보 추출 실패:', {
-                originProductNo, checkoutMerchantNo,
-                debugKeys: cachedProductData?.debugKeys,
-                debugProductKeys: cachedProductData?.debugProductKeys
-            });
+        if (!originProductNo || merchantNoCandidates.length === 0) {
             updateProgress(
-                `정보 부족 (product: ${originProductNo || 'X'}, merchant: ${checkoutMerchantNo || 'X'}) - F12 콘솔 확인`,
+                `정보 부족 (product: ${originProductNo || 'X'}, merchant: 없음) - F12 콘솔 확인`,
                 0
             );
             setTimeout(() => { removeOverlay(); isRunning = false; }, 4000);
             return;
         }
 
-        console.log('[AutoClip] 리뷰 추출 시작:', { originProductNo, checkoutMerchantNo, productName });
+        console.log('[AutoClip] 리뷰 추출 시작:', { originProductNo, merchantNoCandidates, productName });
 
         // 배송 유형
         let deliveryType = '스마트스토어';
@@ -217,41 +229,82 @@
         if (deliveryText.includes('무료배송')) deliveryType = '무료배송';
         else if (deliveryText.includes('착불')) deliveryType = '착불배송';
 
-        // 리뷰 수집
+        // 리뷰 수집 - 올바른 checkoutMerchantNo 찾기
         const apiBase = location.origin;
         const isBrand = /brand\.naver\.com/.test(location.host);
         const apiPath = isBrand ? '/n/v1/contents/reviews/query-pages' : '/i/v1/contents/reviews/query-pages';
         const allReviews = [];
+        let workingMerchantNo = null;
 
-        for (let page = 1; page <= maxPages; page++) {
+        // 1페이지로 각 후보 시도하여 올바른 merchantNo 찾기
+        for (const candidate of merchantNoCandidates) {
+            try {
+                const testRes = await fetch(`${apiBase}${apiPath}`, {
+                    method: 'POST',
+                    headers: buildReviewApiHeaders(),
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        checkoutMerchantNo: Number(candidate),
+                        originProductNo: Number(originProductNo),
+                        page: 1,
+                        pageSize: pageSize,
+                        isMultiProfile: true,
+                        reviewSearchSortType: 'REVIEW_SCORE_ASC'
+                    })
+                });
+                if (testRes.ok && testRes.status === 200) {
+                    const testJson = await testRes.json();
+                    const testContents = testJson?.contents || [];
+                    if (testContents.length > 0) {
+                        workingMerchantNo = candidate;
+                        // 1페이지 결과 바로 사용
+                        for (const item of testContents) {
+                            const content = (item.reviewContent || item.body || '').trim();
+                            if (!content) continue;
+                            allReviews.push({
+                                option: item.productOptionContent || '',
+                                rating: item.reviewScore || 0,
+                                content
+                            });
+                            if (allReviews.length >= maxReviews) break;
+                        }
+                        console.log(`[AutoClip] merchantNo ${candidate} 성공 (${testContents.length}개)`);
+                        break;
+                    }
+                }
+                console.log(`[AutoClip] merchantNo ${candidate} → 리뷰 없음, 다음 후보 시도`);
+            } catch (e) {
+                console.log(`[AutoClip] merchantNo ${candidate} 오류:`, e.message);
+            }
+        }
+
+        if (!workingMerchantNo) {
+            updateProgress('리뷰가 없습니다.', 100);
+            setTimeout(() => { removeOverlay(); isRunning = false; }, 2000);
+            return;
+        }
+
+        // 2페이지부터 계속 수집
+        for (let page = 2; page <= maxPages; page++) {
+            if (allReviews.length >= maxReviews) break;
             updateProgress(`${page} 페이지 수집 중... (${allReviews.length}개)`, Math.min(95, Math.floor((page / maxPages) * 100)));
 
             try {
                 const res = await fetch(`${apiBase}${apiPath}`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'accept': 'application/json, text/plain, */*',
-                        'x-client-version': '20260203185811',
-                    },
+                    headers: buildReviewApiHeaders(),
                     credentials: 'include',
                     body: JSON.stringify({
-                        checkoutMerchantNo: Number(checkoutMerchantNo),
+                        checkoutMerchantNo: Number(workingMerchantNo),
                         originProductNo: Number(originProductNo),
                         page: page,
                         pageSize: pageSize,
+                        isMultiProfile: true,
                         reviewSearchSortType: 'REVIEW_SCORE_ASC'
                     })
                 });
 
-                if (!res.ok) {
-                    if (page === 1) {
-                        updateProgress(`리뷰 API 오류 (${res.status})`, 0);
-                        setTimeout(() => { removeOverlay(); isRunning = false; }, 2000);
-                        return;
-                    }
-                    break;
-                }
+                if (!res.ok || res.status === 204) break;
 
                 const json = await res.json();
                 const contents = json?.contents || [];
@@ -270,15 +323,9 @@
                     if (allReviews.length >= maxReviews) break;
                 }
 
-                if (allReviews.length >= maxReviews) break;
                 if (contents.length < pageSize) break;
             } catch (e) {
                 console.error(`[AutoClip] ${page}페이지 리뷰 오류:`, e);
-                if (page === 1) {
-                    updateProgress('리뷰 수집 실패', 0);
-                    setTimeout(() => { removeOverlay(); isRunning = false; }, 2000);
-                    return;
-                }
                 break;
             }
         }

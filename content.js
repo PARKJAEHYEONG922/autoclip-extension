@@ -49,5 +49,15 @@
         }
     });
 
+    // background에서 오는 진행 상태 메시지를 페이지로 릴레이
+    chrome.runtime.onMessage.addListener((message) => {
+        if (message.type === 'AUTOCLIP_PROGRESS') {
+            window.postMessage({
+                type: 'AUTOCLIP_PROGRESS',
+                step: message.step
+            }, window.location.origin);
+        }
+    });
+
     console.log("[AutoClip Extension] Content script loaded");
 })();

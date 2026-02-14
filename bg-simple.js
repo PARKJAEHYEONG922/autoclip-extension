@@ -30,19 +30,19 @@ export async function handleWingLoginCheck(message, sendResponse) {
             name: "XSRF-TOKEN"
         });
         if (!tokenCookie) {
-            sendResponse({ loggedIn: false });
+            sendResponse({ success: true, loggedIn: false });
             return;
         }
 
         // 쿠키 만료 확인
         if (tokenCookie.expirationDate && tokenCookie.expirationDate < Date.now() / 1000) {
-            sendResponse({ loggedIn: false });
+            sendResponse({ success: true, loggedIn: false });
             return;
         }
 
-        sendResponse({ loggedIn: true });
+        sendResponse({ success: true, loggedIn: true });
     } catch {
-        sendResponse({ loggedIn: false });
+        sendResponse({ success: true, loggedIn: false });
     }
 }
 

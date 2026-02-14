@@ -35,7 +35,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // 쿠팡 광고 보고서
         case "fetchCoupangAdsReport":
-            handleFetchCoupangAdsReport(message, sendResponse);
+            handleFetchCoupangAdsReport(message, sendResponse, sender?.tab?.id);
             return true;
 
         // 쿠팡 순위 체크
