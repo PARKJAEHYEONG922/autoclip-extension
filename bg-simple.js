@@ -77,6 +77,17 @@ export async function handleCoupangWingProductSearch(message, sendResponse) {
             return;
         }
 
+        // 응답이 JSON이 아니면(HTML 로그인/권한 페이지가 200으로 내려온 경우)
+        // → 이 쿠팡 계정에 Wing 판매자 권한이 없거나 세션이 유효하지 않음
+        const contentType = res.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) {
+            sendResponse({
+                success: false,
+                error: "Wing 판매자 권한이 없는 계정이거나 로그인 세션이 유효하지 않습니다. wing.coupang.com에 판매자(셀러) 계정으로 로그인되어 있는지 확인 후 다시 시도해주세요."
+            });
+            return;
+        }
+
         const data = await res.json();
         sendResponse({ success: true, data });
     } catch (e) {
@@ -84,6 +95,9 @@ export async function handleCoupangWingProductSearch(message, sendResponse) {
         const msg = String(e);
         if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
             sendResponse({ success: false, error: "Wing 로그인이 만료되었습니다. wing.coupang.com에 다시 로그인해주세요." });
+        } else if (msg.includes("Unexpected token") || msg.includes("not valid JSON") || msg.includes("SyntaxError")) {
+            // res.json() 파싱 실패 = HTML 응답 (권한 없음/로그인 페이지)
+            sendResponse({ success: false, error: "Wing 판매자 권한이 없는 계정이거나 로그인 세션이 유효하지 않습니다. wing.coupang.com에 판매자(셀러) 계정으로 로그인되어 있는지 확인 후 다시 시도해주세요." });
         } else {
             sendResponse({ success: false, error: msg });
         }

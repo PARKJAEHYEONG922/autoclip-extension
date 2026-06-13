@@ -9,16 +9,48 @@ export function handleNaverLoginCheck(message, sendResponse) {
     });
 }
 
+/**
+ * 서비스 워커에서 직접 네이버 쇼핑 API 호출 (탭 불필요)
+ * - 탭을 열지 않아 차단 페이지 우회
+ * - credentials: "include"로 네이버 쿠키 자동 포함 (host_permissions 필요)
+ */
+async function fetchNaverShoppingAPI(apiUrl) {
+    try {
+        const response = await fetch(apiUrl, {
+            method: "GET",
+            credentials: "include",
+            headers: {
+                "accept": "application/json, text/plain, */*",
+                "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                "referer": "https://search.shopping.naver.com/",
+                "logic": "PART"
+            }
+        });
+
+        if (!response.ok) {
+            console.log(`[NaverTags] Direct API returned ${response.status}`);
+            return { success: false, status: response.status, error: `HTTP ${response.status}` };
+        }
+
+        const text = await response.text();
+        try {
+            const body = JSON.parse(text);
+            return { success: true, status: response.status, body };
+        } catch {
+            // JSON이 아님 = 차단 페이지 HTML
+            console.log(`[NaverTags] Response is not JSON (blocked page?)`);
+            return { success: false, status: response.status, error: "Not JSON response" };
+        }
+    } catch (e) {
+        console.error(`[NaverTags] Direct fetch error:`, e);
+        return { success: false, status: 0, error: String(e) };
+    }
+}
+
 // 네이버 쇼핑 검색 API - 태그 가져오기 (여러 페이지 지원)
 export async function handleGetNaverShoppingTags(message, sendResponse) {
     try {
         const { keyword, pageSize = 40, pages = 2 } = message.payload;
-
-        // 네이버 쇼핑 페이지 탭 열기/재사용
-        const searchUrl = `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(keyword)}`;
-        const tabId = await getOrCreateTab(searchUrl, "reuse");
-
-        await waitForTabLoad(tabId);
 
         const allProducts = [];
         const allTags = [];
@@ -34,22 +66,33 @@ export async function handleGetNaverShoppingTags(message, sendResponse) {
         for (let page = 1; page <= pages; page++) {
             const apiUrl = `https://search.shopping.naver.com/api/search/all?sort=rel&pagingIndex=${page}&pagingSize=${pageSize}&viewType=list&productSet=total&query=${encodeURIComponent(keyword)}&iq=&eq=&xq=&window=&fo=true`;
 
-            const result = await fetchInTab(tabId, apiUrl, {
-                method: "GET",
-                headers: {
-                    "accept": "application/json, text/plain, */*",
-                    "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "logic": "PART"
-                }
-            });
+            // 서비스 워커에서 직접 API 호출 (탭 불필요)
+            let result = await fetchNaverShoppingAPI(apiUrl);
 
-            console.log(`[Background] Page ${page} result:`, result.success);
+            // 직접 호출 실패 시 탭 방식 폴백
+            if (!result.success) {
+                console.log(`[NaverTags] Direct fetch failed (${result.status}), falling back to tab`);
+                const searchUrl = `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(keyword)}`;
+                const tabId = await getOrCreateTab(searchUrl, "reuse");
+                await waitForTabLoad(tabId);
+
+                result = await fetchInTab(tabId, apiUrl, {
+                    method: "GET",
+                    headers: {
+                        "accept": "application/json, text/plain, */*",
+                        "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                        "logic": "PART"
+                    }
+                });
+            }
+
+            console.log(`[NaverTags] Page ${page} result:`, result.success);
 
             if (result.success && result.body) {
                 const products = result.body?.shoppingResult?.products || [];
-                console.log(`[Background] Page ${page} products:`, products.length);
+                console.log(`[NaverTags] Page ${page} products:`, products.length);
 
-                if (products.length === 0) break; // 더 이상 상품이 없으면 중단
+                if (products.length === 0) break;
 
                 products.forEach((product, index) => {
                     const globalRank = allProducts.length + index + 1;
@@ -77,13 +120,14 @@ export async function handleGetNaverShoppingTags(message, sendResponse) {
                     });
                 });
             } else {
-                console.error(`[Background] Page ${page} failed:`, result.error);
+                console.error(`[NaverTags] Page ${page} failed:`, result.error);
                 break;
             }
 
-            // 페이지 간 딜레이 (너무 빠른 요청 방지)
+            // 페이지 간 딜레이 (차단 방지용 1~2초 랜덤)
             if (page < pages) {
-                await new Promise(resolve => setTimeout(resolve, 300));
+                const delay = 1000 + Math.random() * 1000;
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
 
@@ -92,7 +136,7 @@ export async function handleGetNaverShoppingTags(message, sendResponse) {
             .map(([tag, count]) => ({ tag, count }))
             .sort((a, b) => b.count - a.count);
 
-        console.log(`[Background] Total products: ${allProducts.length}, Total unique tags: ${sortedTags.length}`);
+        console.log(`[NaverTags] Total products: ${allProducts.length}, Total unique tags: ${sortedTags.length}`);
 
         sendResponse({
             success: true,
@@ -101,8 +145,7 @@ export async function handleGetNaverShoppingTags(message, sendResponse) {
                 totalProducts: allProducts.length,
                 tags: sortedTags,
                 rawTags: allTags
-            },
-            tabId: tabId
+            }
         });
     } catch (e) {
         console.error("getNaverShoppingTags error:", e);
@@ -118,26 +161,31 @@ export async function handleGetNaverShoppingData(message, sendResponse) {
     try {
         const { keyword, page = 1, pageSize = 40 } = message.payload;
 
-        const searchUrl = `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(keyword)}`;
-        const tabId = await getOrCreateTab(searchUrl, "reuse");
-
-        await waitForTabLoad(tabId);
-
         const apiUrl = `https://search.shopping.naver.com/api/search/all?sort=rel&pagingIndex=${page}&pagingSize=${pageSize}&viewType=list&productSet=total&query=${encodeURIComponent(keyword)}&iq=&eq=&xq=&window=&fo=true`;
 
-        const result = await fetchInTab(tabId, apiUrl, {
-            method: "GET",
-            headers: {
-                "accept": "application/json, text/plain, */*",
-                "logic": "PART"
-            }
-        });
+        // 서비스 워커에서 직접 API 호출
+        let result = await fetchNaverShoppingAPI(apiUrl);
+
+        // 직접 호출 실패 시 탭 방식 폴백
+        if (!result.success) {
+            console.log(`[NaverData] Direct fetch failed (${result.status}), falling back to tab`);
+            const searchUrl = `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(keyword)}`;
+            const tabId = await getOrCreateTab(searchUrl, "reuse");
+            await waitForTabLoad(tabId);
+
+            result = await fetchInTab(tabId, apiUrl, {
+                method: "GET",
+                headers: {
+                    "accept": "application/json, text/plain, */*",
+                    "logic": "PART"
+                }
+            });
+        }
 
         sendResponse({
             success: result.success,
             data: result.body,
-            status: result.status,
-            tabId: tabId
+            status: result.status
         });
     } catch (e) {
         sendResponse({

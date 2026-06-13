@@ -264,7 +264,10 @@
                             allReviews.push({
                                 option: item.productOptionContent || '',
                                 rating: item.reviewScore || 0,
-                                content
+                                content,
+                                date: item.createDate ? item.createDate.split('T')[0] : '',
+                                author: item.writerId || item.maskedWriterId || item.writerNickname || '',
+                                images: (item.reviewAttaches || []).map(a => a.attachUrl).filter(Boolean)
                             });
                             if (allReviews.length >= maxReviews) break;
                         }
@@ -317,7 +320,10 @@
                     allReviews.push({
                         option: item.productOptionContent || '',
                         rating: item.reviewScore || 0,
-                        content
+                        content,
+                        date: item.createDate ? item.createDate.split('T')[0] : '',
+                        author: item.writerId || item.maskedWriterId || item.writerNickname || '',
+                        images: (item.reviewAttaches || []).map(a => a.attachUrl).filter(Boolean)
                     });
 
                     if (allReviews.length >= maxReviews) break;
@@ -361,6 +367,27 @@
         document.body.removeChild(link);
 
         updateProgress(`완료! ${allReviews.length}개 리뷰 다운로드`, 100);
+
+        // review-sync 서버로 전송 (background script 경유)
+        try {
+            chrome.runtime.sendMessage({
+                type: 'REVIEW_SYNC_SEND',
+                data: {
+                    productId: String(originProductNo),
+                    productName,
+                    storeUrl: location.origin + location.pathname.replace(/\/products\/.*/, ''),
+                    reviews: allReviews.map(r => ({
+                        rating: r.rating,
+                        content: r.content,
+                        option: r.option,
+                        date: r.date || '',
+                        author: r.author || '',
+                        images: r.images || []
+                    }))
+                }
+            });
+        } catch (e) {}
+
         setTimeout(() => { removeOverlay(); isRunning = false; }, 2000);
     }
 })();

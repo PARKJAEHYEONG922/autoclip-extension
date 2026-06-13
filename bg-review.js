@@ -15,7 +15,7 @@ export function setupReviewExtractorMenu() {
 }
 
 // 네이버 상품 페이지에서 MAIN world로 __PRELOADED_STATE__ 추출
-async function extractNaverProductData(tabId) {
+export async function extractNaverProductData(tabId) {
     try {
         const results = await chrome.scripting.executeScript({
             target: { tabId },
